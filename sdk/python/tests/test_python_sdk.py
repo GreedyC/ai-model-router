@@ -131,7 +131,7 @@ def test_sdk_outage_errors_through_public_requests(status, error_name, mode, asy
                     else:
                         result = await client.chat.completions.create(prompt="hello", stream=mode == "stream")
                         if mode == "stream":
-                            await anext(result)
+                            await result.__anext__()
                 assert error.value.status_code == status
                 assert error.value.response_body == {"detail": "outage"}
         asyncio.run(run())

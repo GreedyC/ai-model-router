@@ -35,6 +35,16 @@ class APIStatusError(ModelRouterError):
     pass
 
 
+class ProviderUnavailableError(APIStatusError):
+    """Raised when an upstream provider is unavailable (HTTP 503)."""
+    pass
+
+
+class GatewayTimeoutError(APIStatusError):
+    """Raised when the gateway reports a timeout (HTTP 504)."""
+    pass
+
+
 class RoutingError(ModelRouterError):
     """Raised when request routing cannot find an eligible model."""
     pass

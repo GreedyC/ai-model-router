@@ -68,3 +68,13 @@ The async client also supports `async with AsyncModelRouter(...) as client:`.
 It returns the same client and awaits `close()` on normal or exceptional exit,
 without suppressing exceptions. HTTP connections currently belong to each request
 and close there; `close()` is safe to call repeatedly and owns no persistent pool.
+
+
+### Provider and gateway errors
+
+HTTP 503 raises `ProviderUnavailableError`; HTTP 504 raises `GatewayTimeoutError`.
+Both are exported from `modelrouter` and inherit `APIStatusError`, so existing
+`except APIStatusError` handlers still catch them. Their `status_code` and
+`response_body` follow the existing response handling: JSON objects are parsed,
+while other bodies remain text. The mapping also applies to streaming requests
+and health checks. Other health response behavior is unchanged.

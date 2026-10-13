@@ -82,3 +82,69 @@ def test_async_client_close_is_safe_to_repeat():
         async with client:
             pass
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("status,expected", [(503, "ProviderUnavailableError"), (504, "GatewayTimeoutError")])
+@pytest.mark.parametrize("text,body", [(' {"detail": "upstream failure"}', {"detail": "upstream failure"}), ("upstream failure", "upstream failure")])
+def test_sdk_outage_errors_preserve_status_message_and_body(status, expected, text, body):
+    import modelrouter
+    from modelrouter.client import _handle_error_response
+
+    error_type = getattr(modelrouter, expected)
+    assert expected in modelrouter.__all__
+    assert issubclass(error_type, modelrouter.APIStatusError)
+    with pytest.raises(error_type) as error:
+        _handle_error_response(status, text)
+    assert error.value.status_code == status
+    assert error.value.response_body == body
+    assert str(error.value) == f"[{status}] Model Router error ({status}): upstream failure"
+
+
+@pytest.mark.parametrize("status,expected", [(400, "APIStatusError"), (500, "APIStatusError"), (502, "APIStatusError"), (401, "AuthenticationError"), (403, "AuthenticationError"), (429, "RateLimitError"), (422, "RoutingError")])
+def test_sdk_existing_error_mapping_is_unchanged(status, expected):
+    import modelrouter
+    from modelrouter.client import _handle_error_response
+
+    with pytest.raises(getattr(modelrouter, expected)) as error:
+        _handle_error_response(status, '{"detail": "failure"}')
+    assert type(error.value) is getattr(modelrouter, expected)
+    assert error.value.status_code == status
+
+
+@pytest.mark.parametrize("status,error_name", [(503, "ProviderUnavailableError"), (504, "GatewayTimeoutError")])
+@pytest.mark.parametrize("mode", ["chat", "stream", "health"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_sdk_outage_errors_through_public_requests(status, error_name, mode, asynchronous):
+    import httpx
+    import modelrouter
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json={"detail": "outage"}))
+    error_type = getattr(modelrouter, error_name)
+    if asynchronous:
+        original = httpx.AsyncClient
+        async def run():
+            with patch("httpx.AsyncClient", side_effect=lambda **kwargs: original(transport=transport, **kwargs)):
+                client = AsyncModelRouter(api_key="test-key", base_url="http://example.test")
+                with pytest.raises(error_type) as error:
+                    if mode == "health":
+                        await client.health()
+                    else:
+                        result = await client.chat.completions.create(prompt="hello", stream=mode == "stream")
+                        if mode == "stream":
+                            await anext(result)
+                assert error.value.status_code == status
+                assert error.value.response_body == {"detail": "outage"}
+        asyncio.run(run())
+    else:
+        original = httpx.Client
+        with patch("httpx.Client", side_effect=lambda **kwargs: original(transport=transport, **kwargs)):
+            client = ModelRouter(api_key="test-key", base_url="http://example.test")
+            with pytest.raises(error_type) as error:
+                if mode == "health":
+                    client.health()
+                else:
+                    result = client.chat.completions.create(prompt="hello", stream=mode == "stream")
+                    if mode == "stream":
+                        next(result)
+            assert error.value.status_code == status
+            assert error.value.response_body == {"detail": "outage"}

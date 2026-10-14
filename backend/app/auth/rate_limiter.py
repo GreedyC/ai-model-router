@@ -15,8 +15,20 @@ class RateLimiter:
 
     def __init__(self):
         # In-memory sliding window storage: key -> deque of timestamps
-        self._memory_windows: Dict[str, deque] = {}
+        self._memory_windows: Dict[Tuple[str, int], deque] = {}
+        self._next_cleanup = 0.0
         self._lock = asyncio.Lock()
+
+    def _cleanup_stale_keys(self, now: float):
+        if now < self._next_cleanup:
+            return
+        stale_keys = [
+            key for key, timestamps in self._memory_windows.items()
+            if not timestamps or max(timestamps) <= now - key[1]
+        ]
+        for key in stale_keys:
+            del self._memory_windows[key]
+        self._next_cleanup = now + 60.0
 
     async def check_rate_limit(
         self,
@@ -64,10 +76,12 @@ class RateLimiter:
 
         # In-memory sliding window
         async with self._lock:
-            if identifier not in self._memory_windows:
-                self._memory_windows[identifier] = deque()
+            self._cleanup_stale_keys(current_time)
+            memory_key = (identifier, window_seconds)
+            if memory_key not in self._memory_windows:
+                self._memory_windows[memory_key] = deque()
 
-            dq = self._memory_windows[identifier]
+            dq = self._memory_windows[memory_key]
 
             # Pop old timestamps
             while dq and dq[0] <= window_start:
@@ -119,6 +133,7 @@ class RateLimiter:
     def clear(self):
         """Clears in-memory state (useful for tests)."""
         self._memory_windows.clear()
+        self._next_cleanup = 0.0
 
 
 rate_limiter = RateLimiter()

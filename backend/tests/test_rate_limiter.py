@@ -3,6 +3,104 @@ from httpx import AsyncClient, ASGITransport
 from main import app
 from app.auth.rate_limiter import RateLimiter, rate_limiter
 from app.storage.database import init_db
+from collections import deque
+from importlib import import_module
+
+
+@pytest.fixture
+def memory_clock(monkeypatch):
+    module = import_module("app.auth.rate_limiter")
+    clock = [100.0]
+    monkeypatch.setattr(module, "get_redis", lambda: None)
+    monkeypatch.setattr(module.time, "time", lambda: clock[0])
+    return clock
+
+
+@pytest.mark.asyncio
+async def test_evict_inactive_keys_and_keep_active_limit(memory_clock):
+    limiter = RateLimiter()
+    await limiter.check_rate_limit("inactive", 1)
+    memory_clock[0] = 130.0
+    await limiter.check_rate_limit("active", 1)
+    memory_clock[0] = 160.0
+    assert await limiter.check_rate_limit("active", 1) == (False, 0, 30)
+    assert len(limiter._memory_windows) == 1
+    assert ("inactive", 60) not in limiter._memory_windows
+    assert list(limiter._memory_windows[("active", 60)]) == [130.0]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_respects_each_window_and_empty_keys(memory_clock):
+    limiter = RateLimiter()
+    await limiter.check_rate_limit("short", 1, 10)
+    await limiter.check_rate_limit("long", 1, 120)
+    limiter._memory_windows[("empty", 60)] = deque()
+    memory_clock[0] = 160.0
+    await limiter.check_rate_limit("trigger", 1)
+    assert len(limiter._memory_windows) == 2
+    assert ("short", 10) not in limiter._memory_windows
+    assert ("empty", 60) not in limiter._memory_windows
+    assert await limiter.check_rate_limit("long", 1, 120) == (False, 0, 60)
+    memory_clock[0] = 220.0
+    await limiter.check_rate_limit("trigger", 1)
+    assert ("long", 120) not in limiter._memory_windows
+
+
+@pytest.mark.asyncio
+async def test_same_identifier_has_independent_windows(memory_clock):
+    limiter = RateLimiter()
+    assert (await limiter.check_rate_limit("user", 1, 60))[0]
+    assert (await limiter.check_rate_limit("user", 1, 120))[0]
+    memory_clock[0] = 160.0
+    assert (await limiter.check_rate_limit("user", 1, 60))[0]
+    assert not (await limiter.check_rate_limit("user", 1, 120))[0]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_is_periodic_and_clear_resets_it(memory_clock):
+    limiter = RateLimiter()
+    await limiter.check_rate_limit("short", 1, 10)
+    memory_clock[0] = 120.0
+    await limiter.check_rate_limit("other", 1)
+    assert len(limiter._memory_windows) == 2
+    limiter.clear()
+    assert limiter._memory_windows == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_preserve_limit(memory_clock):
+    import asyncio
+
+    limiter = RateLimiter()
+    results = await asyncio.gather(*(limiter.check_rate_limit("user", 3) for _ in range(20)))
+    assert sum(allowed for allowed, _, _ in results) == 3
+    assert sum(len(timestamps) for timestamps in limiter._memory_windows.values()) == 3
+
+
+@pytest.mark.asyncio
+async def test_redis_failure_uses_memory_cleanup(memory_clock, monkeypatch):
+    class FailedRedis:
+        def pipeline(self):
+            raise ConnectionError("unavailable")
+
+    module = import_module("app.auth.rate_limiter")
+    monkeypatch.setattr(module, "get_redis", lambda: FailedRedis())
+    limiter = RateLimiter()
+    await limiter.check_rate_limit("inactive", 1)
+    memory_clock[0] = 160.0
+    assert (await limiter.check_rate_limit("active", 1))[0]
+    assert len(limiter._memory_windows) == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_keeps_live_entries_after_clock_rollback(memory_clock):
+    limiter = RateLimiter()
+    memory_clock[0] = 360.0
+    await limiter.check_rate_limit("user", 2, 120)
+    memory_clock[0] = 100.0
+    await limiter.check_rate_limit("user", 2, 120)
+    memory_clock[0] = 420.0
+    assert not (await limiter.check_rate_limit("user", 2, 120))[0]
 
 
 @pytest.fixture(autouse=True)

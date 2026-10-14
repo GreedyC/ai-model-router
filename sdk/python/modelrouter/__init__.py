@@ -9,6 +9,8 @@ from modelrouter.exceptions import (
     RateLimitError,
     APIConnectionError,
     APIStatusError,
+    ProviderUnavailableError,
+    GatewayTimeoutError,
     RoutingError,
 )
 from modelrouter.types import (
@@ -30,6 +32,8 @@ __all__ = [
     "RateLimitError",
     "APIConnectionError",
     "APIStatusError",
+    "ProviderUnavailableError",
+    "GatewayTimeoutError",
     "RoutingError",
     "ChatMessage",
     "ChatCompletion",

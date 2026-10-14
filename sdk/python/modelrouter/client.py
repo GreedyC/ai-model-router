@@ -20,6 +20,8 @@ from modelrouter.exceptions import (
     RateLimitError,
     APIConnectionError,
     APIStatusError,
+    ProviderUnavailableError,
+    GatewayTimeoutError,
     RoutingError,
 )
 
@@ -39,7 +41,8 @@ def _handle_error_response(status_code: int, text: str):
     elif status_code == 422:
         raise RoutingError(f"Invalid routing request or parameter: {detail}", status_code=status_code, response_body=body)
     else:
-        raise APIStatusError(f"Model Router error ({status_code}): {detail}", status_code=status_code, response_body=body)
+        error_type = {503: ProviderUnavailableError, 504: GatewayTimeoutError}.get(status_code, APIStatusError)
+        raise error_type(f"Model Router error ({status_code}): {detail}", status_code=status_code, response_body=body)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +255,11 @@ class ModelRouter:
         try:
             with httpx.Client(timeout=self.timeout) as http_client:
                 res = http_client.get(url, headers=self._get_headers())
+            if res.status_code in (503, 504):
+                _handle_error_response(res.status_code, res.text)
             return res.json()
+        except APIStatusError:
+            raise
         except Exception as exc:
             raise APIConnectionError(f"Health check failed for {self.base_url}: {exc}")
 
@@ -475,6 +482,10 @@ class AsyncModelRouter:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http_client:
                 res = await http_client.get(url, headers=self._get_headers())
+            if res.status_code in (503, 504):
+                _handle_error_response(res.status_code, res.text)
             return res.json()
+        except APIStatusError:
+            raise
         except Exception as exc:
             raise APIConnectionError(f"Health check failed for {self.base_url}: {exc}")
